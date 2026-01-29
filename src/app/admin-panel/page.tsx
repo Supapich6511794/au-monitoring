@@ -31,6 +31,7 @@ export default function AdminPanelPage() {
     { id: 'TQF Master 2.0 Desktop', icon: <Download className="w-5 h-5" />, path: '/tqf-desktop' },
     { id: 'Course Monitoring', icon: <Brain className="w-5 h-5" />, path: '/course-monitoring' },
     { id: 'TQF Master 2.0', icon: <Folder className="w-5 h-5" />, path: '/tqf-master' },
+    { id: 'Course Planner', icon: <Brain className="w-5 h-5" />, path: '/course-planner' },
     { id: 'Registration Simulator', icon: <Database className="w-5 h-5" />, path: '/registration-simulator' },
     { id: 'APIs & Services', icon: <Code2 className="w-5 h-5" />, path: '/apis-services' },
   ]
