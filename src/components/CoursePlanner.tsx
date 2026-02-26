@@ -5,13 +5,16 @@ import { useCoursePlanner } from '@/hooks/useCoursePlanner'
 import { DAYS } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { RefreshCw, Search, SlidersHorizontal, X, Plus, Trash2, Edit } from 'lucide-react'
-import { CourseBlock, CSVCourse } from './CourseBlock'
+import { CSVCourse } from './CourseBlock'
+import { CourseDetailEditor } from './CourseDetailEditor'
 import { CourseGroup as SupabaseCourseGroup } from '@/lib/types'
 import { SwimlaneSchedule } from './SwimlaneSchedule'
 import { AnimatedNumber } from './AnimatedNumber'
 import { AddClassModalPlanner } from './AddClassModalPlanner'
 import { EditClassModalPlanner } from './EditClassModalPlanner'
 import { useAuth } from '@/hooks/useAuth'
+import { Portal } from './Portal'
+
 
 // Time axis configuration
 const START_MIN = 7 * 60 + 30  // 07:30
@@ -36,53 +39,73 @@ function formatTime(time: string): string {
   return time
 }
 
-// Group overlapping courses (courses that overlap in ANY way, not just same time)
+// Course with layer assignment for overlap stacking
+interface CourseWithLayer extends CSVCourse {
+  layer: number
+}
+
+// Result of processing courses for a day
+interface DayCoursesResult {
+  courses: CourseWithLayer[]
+  maxLayers: number
+}
+
+// Assign layer indices to courses based on time overlap
+// Uses greedy algorithm: assign each course to the lowest available layer
+function assignCourseLayers(courses: CSVCourse[]): DayCoursesResult {
+  if (courses.length === 0) return { courses: [], maxLayers: 0 }
+  
+  // Sort by start time, then by end time
+  const sorted = [...courses].sort((a, b) => {
+    const startDiff = timeToMinutes(a.startTime) - timeToMinutes(b.startTime)
+    if (startDiff !== 0) return startDiff
+    return timeToMinutes(a.endTime) - timeToMinutes(b.endTime)
+  })
+  
+  // Track end times for each layer
+  const layerEndTimes: number[] = []
+  const result: CourseWithLayer[] = []
+  
+  for (const course of sorted) {
+    const courseStart = timeToMinutes(course.startTime)
+    const courseEnd = timeToMinutes(course.endTime)
+    
+    // Find the first layer where this course doesn't overlap
+    let assignedLayer = -1
+    for (let i = 0; i < layerEndTimes.length; i++) {
+      if (layerEndTimes[i] <= courseStart) {
+        assignedLayer = i
+        break
+      }
+    }
+    
+    // If no existing layer is available, create a new one
+    if (assignedLayer === -1) {
+      assignedLayer = layerEndTimes.length
+      layerEndTimes.push(0)
+    }
+    
+    // Update the layer's end time
+    layerEndTimes[assignedLayer] = courseEnd
+    
+    // Add course with layer assignment
+    result.push({
+      ...course,
+      layer: assignedLayer
+    })
+  }
+  
+  return {
+    courses: result,
+    maxLayers: layerEndTimes.length
+  }
+}
+
+// Legacy interface for compatibility
 interface CourseGroup {
   courses: CSVCourse[]
   startMin: number
   endMin: number
-}
-
-function groupOverlappingCourses(courses: CSVCourse[]): CourseGroup[] {
-  if (courses.length === 0) return []
-  
-  // Sort by start time
-  const sorted = [...courses].sort((a, b) => 
-    timeToMinutes(a.startTime) - timeToMinutes(b.startTime)
-  )
-  
-  const groups: CourseGroup[] = []
-  let currentGroup: CourseGroup = {
-    courses: [sorted[0]],
-    startMin: timeToMinutes(sorted[0].startTime),
-    endMin: timeToMinutes(sorted[0].endTime)
-  }
-  
-  for (let i = 1; i < sorted.length; i++) {
-    const course = sorted[i]
-    const courseStart = timeToMinutes(course.startTime)
-    const courseEnd = timeToMinutes(course.endTime)
-    
-    // Check if this course overlaps with current group
-    if (courseStart < currentGroup.endMin) {
-      // Overlaps - add to current group and extend end time if needed
-      currentGroup.courses.push(course)
-      currentGroup.endMin = Math.max(currentGroup.endMin, courseEnd)
-    } else {
-      // No overlap - save current group and start new one
-      groups.push(currentGroup)
-      currentGroup = {
-        courses: [course],
-        startMin: courseStart,
-        endMin: courseEnd
-      }
-    }
-  }
-  
-  // Don't forget the last group
-  groups.push(currentGroup)
-  
-  return groups
 }
 
 // Centralized glow configuration - Change this number to adjust all glow sizes
@@ -170,7 +193,7 @@ export function CoursePlanner() {
   }, [selectedGroupIds])
 
   // Popup width in pixels for edge-to-edge snapping
-  const POPUP_WIDTH = 500
+  const POPUP_WIDTH = 275
 
   // Handle course block click - show detail panel
   const handleCourseClick = (group: CSVCourse[]) => {
@@ -189,7 +212,7 @@ export function CoursePlanner() {
     
     // Day -> Day: No animation, instant switch
     if (filters.activeDay !== 'ALL' && newDay !== 'ALL') {
-      setActiveDay(newDay as any)
+      setActiveDay(newDay as typeof filters.activeDay)
       return
     }
     
@@ -215,7 +238,7 @@ export function CoursePlanner() {
       // ALL -> Day: Both animate simultaneously
       setShowDayTimetable(true)
       setDaySlidePos(-170)
-      setActiveDay(newDay as any)
+      setActiveDay(newDay as typeof filters.activeDay)
       
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -281,6 +304,49 @@ export function CoursePlanner() {
     groups.flatMap(g => g.courses)
   )
 
+  // Process courses with layer assignments for vertical stacking (no overlap)
+  const processedCoursesByDay = useMemo((): Record<string, DayCoursesResult> => {
+    const result: Record<string, DayCoursesResult> = {}
+    
+    DAYS.forEach(day => {
+      // Get all courses for this day from all groups
+      const dayGroups = coursesByDay[day] || []
+      const dayCourses = dayGroups.flatMap(g => g.courses)
+      
+      // Apply filters
+      const filteredCourses = dayCourses.filter(c => {
+        // Text search filter
+        if (searchInput.trim()) {
+          const matchesSearch = c.courseCode.toLowerCase().includes(searchInput.toLowerCase()) ||
+            c.courseTitle.toLowerCase().includes(searchInput.toLowerCase())
+          if (!matchesSearch) return false
+        }
+        // Advanced filters
+        if (advancedFilters.prefix && c.prefix !== advancedFilters.prefix) return false
+        if (advancedFilters.section && c.section !== advancedFilters.section) return false
+        if (advancedFilters.instructor && c.instructor !== advancedFilters.instructor) return false
+        if (advancedFilters.seatMin && c.seatLeft < parseInt(advancedFilters.seatMin)) return false
+        if (advancedFilters.seatMax && c.seatLeft > parseInt(advancedFilters.seatMax)) return false
+        if (advancedFilters.timeStart) {
+          const filterStart = timeToMinutes(advancedFilters.timeStart)
+          const courseStart = timeToMinutes(c.startTime)
+          if (courseStart < filterStart) return false
+        }
+        if (advancedFilters.timeEnd) {
+          const filterEnd = timeToMinutes(advancedFilters.timeEnd)
+          const courseEnd = timeToMinutes(c.endTime)
+          if (courseEnd > filterEnd) return false
+        }
+        return true
+      })
+      
+      // Assign layers for overlap stacking
+      result[day] = assignCourseLayers(filteredCourses)
+    })
+    
+    return result
+  }, [coursesByDay, searchInput, advancedFilters])
+
   // Get the latest course data for selected group (real-time updates)
   const selectedGroup = useMemo(() => {
     if (!selectedGroupIds) return null
@@ -303,13 +369,22 @@ export function CoursePlanner() {
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
         setShowSearchDropdown(false)
       }
-      if (filterRef.current && !filterRef.current.contains(e.target as Node)) {
-        setShowAdvancedFilter(false)
-      }
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
+
+  // Prevent body scroll when advanced filter modal is open
+  useEffect(() => {
+    if (showAdvancedFilter) {
+      document.body.style.overflow = 'hidden'
+    } else {
+      document.body.style.overflow = ''
+    }
+    return () => {
+      document.body.style.overflow = ''
+    }
+  }, [showAdvancedFilter])
 
   // Get unique filter options based on current filters (dynamic dependency)
   const getFilteredCourses = () => {
@@ -450,7 +525,7 @@ export function CoursePlanner() {
         setDeleteMessage({ type: 'error', text: result.error || 'Failed to delete course' })
         setDeleteConfirm(null)
       }
-    } catch (error) {
+    } catch {
       setDeleteMessage({ type: 'error', text: 'An unexpected error occurred' })
       setDeleteConfirm(null)
     } finally {
@@ -493,9 +568,10 @@ export function CoursePlanner() {
 
   // Cleanup all glow timeouts on unmount
   useEffect(() => {
+    const timeoutsRef = glowTimeoutsRef.current
     return () => {
-      glowTimeoutsRef.current.forEach(timeout => clearTimeout(timeout))
-      glowTimeoutsRef.current.clear()
+      timeoutsRef.forEach(timeout => clearTimeout(timeout))
+      timeoutsRef.clear()
     }
   }, [])
 
@@ -509,7 +585,7 @@ export function CoursePlanner() {
   })
 
   return (
-    <div className="max-w-[1000px] mx-auto px-4 py-6">
+    <div className="max-w-[1100px] mx-auto px-4 py-6">
       {/* Header with title and filters */}
       <div className="mb-4 flex items-center justify-between">
         <div>
@@ -584,7 +660,7 @@ export function CoursePlanner() {
             {/* Search dropdown results */}
             {showSearchDropdown && searchResults.length > 0 && (
               <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
-                {searchResults.map((course, idx) => {
+                {searchResults.map((course) => {
                   const courseId = `${course.courseCode}-${course.section}`
                   const isGlowing = glowingCourses.has(courseId)
                   return (
@@ -671,126 +747,7 @@ export function CoursePlanner() {
               transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
             }}
           >
-        <div 
-          className="relative transition-all duration-500 ease-in-out"
-          style={{
-            transform: selectedGroup ? 'translateX(20%)' : 'translateX(0)',
-          }}
-        >
-        {/* Detail Panel - ABSOLUTE positioned, pops out from timetable left edge */}
-        <div 
-          className={cn(
-            "absolute top-0 bg-white border border-gray-200 rounded-l-2xl shadow-lg z-30 transition-all duration-500 ease-in-out overflow-hidden",
-            selectedGroup ? "opacity-100" : "opacity-0 pointer-events-none"
-          )}
-          style={{
-            right: '100%',
-            marginRight: '16px',
-            width: selectedGroup ? `${POPUP_WIDTH}px` : '0px',
-          }}
-        >
-          {selectedGroup && (
-<div className="flex flex-col" style={{ width: `${POPUP_WIDTH}px`, maxHeight: '530px' }}>
-              {/* Panel header */}
-              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gray-50">
-                <h3 className="font-bold text-gray-800">Course Details</h3>
-                <button 
-                  onClick={closeDetailPanel}
-                  className="text-gray-500 hover:text-gray-700 text-xl font-bold"
-                >
-                  ×
-                </button>
-              </div>
-              
-              {/* Scrollable content */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {groupByTime(selectedGroup).map(([timeSlot, courses]) => (
-                  <div key={timeSlot}>
-                    {/* Time header */}
-                    <div className="text-sm font-bold text-gray-600 mb-2 bg-gray-100 px-2 py-1 rounded">
-                      {timeSlot}
-                    </div>
-                    {/* Course cards - 2 column grid */}
-                    <div className="grid grid-cols-2 gap-2">
-                      {courses.map((course, idx) => {
-                        const courseId = `${course.courseCode}-${course.section}`
-                        const isGlowing = glowingCourses.has(`detail-${courseId}`)
-                        return (
-                          <div 
-                            key={courseId}
-                            className={cn(
-                              "p-3 rounded-lg border-2 transition-all duration-200",
-                              course.seatLeft === 0 ? "bg-red-50 border-red-300" :
-                              course.seatLeft / course.seatLimit < 0.25 ? "bg-orange-50 border-orange-300" :
-                              course.seatLeft / course.seatLimit < 0.5 ? "bg-amber-50 border-amber-300" :
-                              "bg-emerald-50 border-emerald-300",
-                              isGlowing && `shadow-${GLOW_SIZE}`,
-                              isGlowing && getGlowColor(course.seatLeft, course.seatLimit)
-                            )}
-                          >
-                            <div className="flex justify-between items-start">
-                              <span className="font-bold text-gray-800">{course.courseCode}</span>
-                              <span className={cn(
-                                "px-2 py-0.5 rounded text-xs font-bold text-white inline-flex items-center",
-                                course.seatLeft === 0 ? "bg-red-500" :
-                                course.seatLeft / course.seatLimit < 0.25 ? "bg-orange-500" :
-                                course.seatLeft / course.seatLimit < 0.5 ? "bg-amber-500" :
-                                "bg-emerald-500"
-                              )}>
-                                <AnimatedNumber value={course.seatLeft} onChangeDirection={(dir) => handleDetailGlow(courseId, dir)} /><span>/{course.seatLimit}</span>
-                              </span>
-                            </div>
-                            <p className="text-xs text-gray-600 mt-1 line-clamp-2">{course.courseTitle}</p>
-                            <div className="text-xs text-gray-500 mt-2">
-                              <div>Section: {course.section}</div>
-                              <div>Instructor: {course.instructor}</div>
-                            </div>
-                            {/* Edit and Delete buttons */}
-                            <div className="mt-2 flex gap-1">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setEditingCourse({
-                                    courseCode: course.courseCode,
-                                    section: course.section,
-                                    prefix: course.prefix,
-                                    courseTitle: course.courseTitle,
-                                    seatLimit: course.seatLimit,
-                                    seatUsed: course.seatUsed,
-                                    seatLeft: course.seatLeft,
-                                    startTime: course.startTime,
-                                    endTime: course.endTime,
-                                    instructorName: course.instructor,
-                                    day: course.day,
-                                  })
-                                  setShowEditClassModal(true)
-                                }}
-                                className="flex-1 px-2 py-1 bg-blue-100 text-blue-600 rounded text-xs font-medium hover:bg-blue-200 transition-colors flex items-center justify-center gap-1"
-                              >
-                                <Edit className="w-3 h-3" />
-                                Edit
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setDeleteConfirm({ courseCode: course.courseCode, section: course.section })
-                                }}
-                                className="flex-1 px-2 py-1 bg-red-100 text-red-600 rounded text-xs font-medium hover:bg-red-200 transition-colors flex items-center justify-center gap-1"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        <div className="relative">
 
         {/* Timetable content - wider to the right for more course name space */}
         <div style={{ width: '120%' }}>
@@ -810,88 +767,121 @@ export function CoursePlanner() {
 
           {/* Time table box */}
           <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-md">
-            {/* Grid - Time table structure without courses */}
+            {/* Grid - Time table structure with vertical stacking for overlaps */}
             <div>
-              {DAYS.map((day, idx) => (
-                <div
-                  key={day}
-                  className={cn(
-                    'relative h-[72px]',
-                    idx > 0 && 'border-t border-gray-200'
-                  )}
-                >
-                  {/* Day label */}
-                  <div className="absolute left-0 top-0 bottom-0 w-[70px] flex items-center justify-center font-semibold text-gray-500 bg-white border-r border-gray-200">
-                    {day.slice(0, 3).toUpperCase()}
-                  </div>
-
-                  {/* Time slots grid */}
-                  <div 
-                    className="absolute left-[70px] right-0 top-0 bottom-0"
-                    style={{
-                      backgroundImage: 'linear-gradient(to right, #e5e7eb 1px, transparent 1px)',
-                      backgroundSize: `${100 / CELLS}% 100%`,
-                    }}
+              {DAYS.map((day, dayIdx) => {
+                const dayData = processedCoursesByDay[day] || { courses: [], maxLayers: 0 }
+                const { courses: dayCourses, maxLayers } = dayData
+                const rowHeight = Math.max(1, maxLayers) * 52 // 52px per layer, minimum 52px
+                
+                return (
+                  <div
+                    key={day}
+                    className={cn(
+                      'relative',
+                      dayIdx > 0 && 'border-t border-gray-200'
+                    )}
+                    style={{ minHeight: `${rowHeight}px` }}
                   >
-                    {/* Course blocks for this day - filtered by search and advanced filters */}
-                    {coursesByDay[day]?.map((group, groupIdx) => {
-                      // Filter courses in group by search input AND advanced filters
-                      const filteredCourses = group.courses.filter(c => {
-                        // Text search filter
-                        if (searchInput.trim()) {
-                          const matchesSearch = c.courseCode.toLowerCase().includes(searchInput.toLowerCase()) ||
-                            c.courseTitle.toLowerCase().includes(searchInput.toLowerCase())
-                          if (!matchesSearch) return false
-                        }
-                        // Advanced filters
-                        if (advancedFilters.prefix && c.prefix !== advancedFilters.prefix) return false
-                        if (advancedFilters.section && c.section !== advancedFilters.section) return false
-                        if (advancedFilters.instructor && c.instructor !== advancedFilters.instructor) return false
-                        if (advancedFilters.seatMin && c.seatLeft < parseInt(advancedFilters.seatMin)) return false
-                        if (advancedFilters.seatMax && c.seatLeft > parseInt(advancedFilters.seatMax)) return false
-                        if (advancedFilters.timeStart) {
-                          const filterStart = timeToMinutes(advancedFilters.timeStart)
-                          const courseStart = timeToMinutes(c.startTime)
-                          if (courseStart < filterStart) return false
-                        }
-                        if (advancedFilters.timeEnd) {
-                          const filterEnd = timeToMinutes(advancedFilters.timeEnd)
-                          const courseEnd = timeToMinutes(c.endTime)
-                          if (courseEnd > filterEnd) return false
-                        }
-                        return true
-                      })
+                    {/* Day label - sticky left */}
+                    <div 
+                      className="absolute left-0 top-0 bottom-0 w-[70px] flex items-center justify-center font-semibold text-gray-500 bg-white border-r border-gray-200 z-10"
+                      style={{ position: 'sticky', left: 0 }}
+                    >
+                      {day.slice(0, 3).toUpperCase()}
+                    </div>
+
+                    {/* Time slots grid with CSS Grid for vertical stacking */}
+                    <div 
+                      className="ml-[70px] relative"
+                      style={{
+                        display: 'grid',
+                        gridTemplateRows: `repeat(${Math.max(1, maxLayers)}, minmax(56px, auto))`,
+                        gridTemplateColumns: `repeat(${CELLS}, 1fr)`,
+                        backgroundImage: 'linear-gradient(to right, #e5e7eb 1px, transparent 1px)',
+                        backgroundSize: `${100 / CELLS}% 100%`,
+                        minHeight: `${rowHeight}px`,
+                      }}
+                    >
+                      {/* Course cards - positioned by absolute positioning for precise time alignment */}
+                      {dayCourses.map((course) => {
+                        const courseId = `${course.courseCode}-${course.section}`
+                        const courseStart = timeToMinutes(course.startTime)
+                        const courseEnd = timeToMinutes(course.endTime)
+                        
+                        // Calculate precise position using percentage of total span
+                        const leftPercent = ((courseStart - START_MIN) / SPAN_MIN) * 100
+                        const widthPercent = ((courseEnd - courseStart) / SPAN_MIN) * 100
+                        
+                        // Seat status color
+                        const seatRatio = course.seatLimit > 0 ? course.seatLeft / course.seatLimit : 0
+                        const statusColor = course.seatLeft === 0 ? 'bg-red-100 border-red-300 hover:bg-red-50' :
+                          seatRatio < 0.25 ? 'bg-orange-100 border-orange-300 hover:bg-orange-50' :
+                          seatRatio < 0.5 ? 'bg-amber-100 border-amber-300 hover:bg-amber-50' :
+                          'bg-emerald-100 border-emerald-300 hover:bg-emerald-50'
+                        
+                        const badgeColor = course.seatLeft === 0 ? 'bg-red-500' :
+                          seatRatio < 0.25 ? 'bg-orange-500' :
+                          seatRatio < 0.5 ? 'bg-amber-500' :
+                          'bg-emerald-500'
+                        
+                        return (
+                          <div
+                            key={courseId}
+                            className={cn(
+                              "absolute px-2 py-1.5 rounded-lg border-2 cursor-pointer transition-all duration-200",
+                              "hover:shadow-md hover:scale-[1.02] hover:z-20",
+                              statusColor
+                            )}
+                            style={{
+                              left: `${leftPercent}%`,
+                              width: `${widthPercent}%`,
+                              top: `${course.layer * 52}px`, // 52px per layer
+                              height: '48px', // Reduced height for compact display
+                              zIndex: 10 + course.layer, // Higher layers on top
+                            }}
+                            onClick={() => handleCourseClick([course])}
+                          >
+                            {/* Course content */}
+                            <div className="flex flex-col h-full justify-between">
+                              <div className="flex items-center justify-between">
+                                <div className="font-bold text-gray-800 text-sm">
+                                  {course.courseCode}
+                                </div>
+                                <span className={cn(
+                                  "px-1.5 py-0.5 rounded text-xs font-bold text-white shrink-0",
+                                  badgeColor
+                                )}>
+                                  {course.seatLeft}
+                                </span>
+                              </div>
+                              <div className="text-xs text-gray-500">
+                                {formatTime(course.startTime)} – {formatTime(course.endTime)}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
                       
-                      // Skip if no courses match the filter
-                      if (filteredCourses.length === 0) return null
-                      
-                      // Use first filtered course as the display course
-                      const displayCourse = filteredCourses[0]
-                      
-                      // When filtering, use actual course times instead of group times
-                      const hasActiveFilter = searchInput.trim() || hasActiveFilters
-                      const courseStartMin = timeToMinutes(displayCourse.startTime)
-                      const courseEndMin = timeToMinutes(displayCourse.endTime)
-                      const useStartMin = hasActiveFilter ? courseStartMin : group.startMin
-                      const useSpanMin = hasActiveFilter ? (courseEndMin - courseStartMin) : (group.endMin - group.startMin)
-                      
-                      return (
-                        <CourseBlock
-                          key={`${day}-group-${groupIdx}`}
-                          course={displayCourse}
-                          startMin={useStartMin}
-                          spanMin={useSpanMin}
-                          groupStartMin={START_MIN}
-                          groupSpanMin={SPAN_MIN}
-                          stackTotal={filteredCourses.length}
-                          stackedCourses={filteredCourses}
-                          onClick={() => handleCourseClick(filteredCourses)}
-                        />
-                      )
-                    })}
+                      {/* Empty state */}
+                      {dayCourses.length === 0 && (
+                        <div 
+                          className="absolute flex items-center justify-center text-gray-400 text-sm italic"
+                          style={{
+                            left: '50%',
+                            top: '24px',
+                            transform: 'translateX(-50%)',
+                            width: 'auto',
+                            height: '48px',
+                          }}
+                        >
+                          No courses
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         </div>
@@ -900,145 +890,147 @@ export function CoursePlanner() {
       )}
       </div>
 
-      {/* Advanced Filter Popup - Fixed position floating modal */}
-      {showAdvancedFilter && (
-        <>
-          {/* Backdrop with fade animation */}
-          <div 
-            className="fixed inset-0 bg-black/30 z-[100] animate-in fade-in duration-200 backdrop-blur-sm"
-            onClick={() => setShowAdvancedFilter(false)}
-          />
-          {/* Modal with scale + fade animation */}
-          <div 
-            ref={filterRef}
-            className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[420px] bg-white border border-gray-200 rounded-2xl shadow-2xl z-[101] overflow-hidden animate-in fade-in zoom-in-95 slide-in-from-bottom-4 duration-300"
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
-              <h3 className="font-semibold text-gray-800 text-sm">Advanced Filters</h3>
-              <button onClick={() => setShowAdvancedFilter(false)} className="text-gray-400 hover:text-gray-600">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            
-            {/* Filter fields */}
-            <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
-              {/* Prefix */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Prefix</label>
-                <select
-                  value={advancedFilters.prefix}
-                  onChange={(e) => setAdvancedFilters(prev => ({ ...prev, prefix: e.target.value, section: '', instructor: '' }))}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                >
-                  <option value="">All Prefixes</option>
-                  {availableOptions.prefixes.map(p => (
-                    <option key={p} value={p}>{p}</option>
-                  ))}
-                </select>
+      {/* Advanced Filter Popup - Rendered via Portal to escape transform context */}
+      <Portal>
+        {showAdvancedFilter && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center">
+            {/* Backdrop with fade animation */}
+            <div 
+              className="absolute inset-0 bg-black/30 animate-in fade-in duration-200 backdrop-blur-sm"
+              onClick={() => setShowAdvancedFilter(false)}
+            />
+            {/* Modal with scale + fade animation */}
+            <div 
+              ref={filterRef}
+              className="relative w-[420px] bg-white border border-gray-200 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 slide-in-from-bottom-4 duration-300"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
+                <h3 className="font-semibold text-gray-800 text-sm">Advanced Filters</h3>
+                <button onClick={() => setShowAdvancedFilter(false)} className="text-gray-400 hover:text-gray-600">
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-
-              {/* Seat Range */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Seats Available</label>
-                <div className="flex gap-2 items-center">
-                  <input
-                    type="number"
-                    placeholder="Min"
-                    value={advancedFilters.seatMin}
-                    onChange={(e) => setAdvancedFilters(prev => ({ ...prev, seatMin: e.target.value }))}
-                    className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                    min="0"
-                  />
-                  <span className="text-gray-400">-</span>
-                  <input
-                    type="number"
-                    placeholder="Max"
-                    value={advancedFilters.seatMax}
-                    onChange={(e) => setAdvancedFilters(prev => ({ ...prev, seatMax: e.target.value }))}
-                    className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                    min="0"
-                  />
-                </div>
-              </div>
-
-              {/* Time Range */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Time Range</label>
-                <div className="flex gap-2 items-center">
+              
+              {/* Filter fields */}
+              <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+                {/* Prefix */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Prefix</label>
                   <select
-                    value={advancedFilters.timeStart}
-                    onChange={(e) => setAdvancedFilters(prev => ({ ...prev, timeStart: e.target.value }))}
-                    className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                    value={advancedFilters.prefix}
+                    onChange={(e) => setAdvancedFilters(prev => ({ ...prev, prefix: e.target.value, section: '', instructor: '' }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
                   >
-                    <option value="">Start</option>
-                    {availableOptions.times.map(t => (
-                      <option key={`start-${t}`} value={t}>{t}</option>
-                    ))}
-                  </select>
-                  <span className="text-gray-400">-</span>
-                  <select
-                    value={advancedFilters.timeEnd}
-                    onChange={(e) => setAdvancedFilters(prev => ({ ...prev, timeEnd: e.target.value }))}
-                    className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                  >
-                    <option value="">End</option>
-                    {availableOptions.times.map(t => (
-                      <option key={`end-${t}`} value={t}>{t}</option>
+                    <option value="">All Prefixes</option>
+                    {availableOptions.prefixes.map(p => (
+                      <option key={p} value={p}>{p}</option>
                     ))}
                   </select>
                 </div>
+
+                {/* Seat Range */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Seats Available</label>
+                  <div className="flex gap-2 items-center">
+                    <input
+                      type="number"
+                      placeholder="Min"
+                      value={advancedFilters.seatMin}
+                      onChange={(e) => setAdvancedFilters(prev => ({ ...prev, seatMin: e.target.value }))}
+                      className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                      min="0"
+                    />
+                    <span className="text-gray-400">-</span>
+                    <input
+                      type="number"
+                      placeholder="Max"
+                      value={advancedFilters.seatMax}
+                      onChange={(e) => setAdvancedFilters(prev => ({ ...prev, seatMax: e.target.value }))}
+                      className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                      min="0"
+                    />
+                  </div>
+                </div>
+
+                {/* Time Range */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Time Range</label>
+                  <div className="flex gap-2 items-center">
+                    <select
+                      value={advancedFilters.timeStart}
+                      onChange={(e) => setAdvancedFilters(prev => ({ ...prev, timeStart: e.target.value }))}
+                      className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                    >
+                      <option value="">Start</option>
+                      {availableOptions.times.map(t => (
+                        <option key={`start-${t}`} value={t}>{t}</option>
+                      ))}
+                    </select>
+                    <span className="text-gray-400">-</span>
+                    <select
+                      value={advancedFilters.timeEnd}
+                      onChange={(e) => setAdvancedFilters(prev => ({ ...prev, timeEnd: e.target.value }))}
+                      className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                    >
+                      <option value="">End</option>
+                      {availableOptions.times.map(t => (
+                        <option key={`end-${t}`} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Section */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Section</label>
+                  <select
+                    value={advancedFilters.section}
+                    onChange={(e) => setAdvancedFilters(prev => ({ ...prev, section: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                  >
+                    <option value="">All Sections</option>
+                    {availableOptions.sections.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Instructor */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Instructor</label>
+                  <select
+                    value={advancedFilters.instructor}
+                    onChange={(e) => setAdvancedFilters(prev => ({ ...prev, instructor: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                  >
+                    <option value="">All Instructors</option>
+                    {availableOptions.instructors.map(i => (
+                      <option key={i} value={i}>{i}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
-              {/* Section */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Section</label>
-                <select
-                  value={advancedFilters.section}
-                  onChange={(e) => setAdvancedFilters(prev => ({ ...prev, section: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+              {/* Footer buttons */}
+              <div className="flex gap-2 px-4 py-3 border-t border-gray-100 bg-gray-50">
+                <button
+                  onClick={clearAdvancedFilters}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
                 >
-                  <option value="">All Sections</option>
-                  {availableOptions.sections.map(s => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Instructor */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Instructor</label>
-                <select
-                  value={advancedFilters.instructor}
-                  onChange={(e) => setAdvancedFilters(prev => ({ ...prev, instructor: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                  Clear All
+                </button>
+                <button
+                  onClick={applyAdvancedFilters}
+                  className="flex-1 px-3 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 transition-colors"
                 >
-                  <option value="">All Instructors</option>
-                  {availableOptions.instructors.map(i => (
-                    <option key={i} value={i}>{i}</option>
-                  ))}
-                </select>
+                  Apply Filters
+                </button>
               </div>
-            </div>
-
-            {/* Footer buttons */}
-            <div className="flex gap-2 px-4 py-3 border-t border-gray-100 bg-gray-50">
-              <button
-                onClick={clearAdvancedFilters}
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
-              >
-                Clear All
-              </button>
-              <button
-                onClick={applyAdvancedFilters}
-                className="flex-1 px-3 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 transition-colors"
-              >
-                Apply Filters
-              </button>
             </div>
           </div>
-        </>
-      )}
+        )}
+      </Portal>
       
       {/* Add Class Modal */}
       <AddClassModalPlanner
@@ -1121,6 +1113,45 @@ export function CoursePlanner() {
           </div>
         </>
       )}
+
+      {/* Course Detail Panel - Left side positioned, no backdrop blur */}
+      <Portal>
+        {selectedGroup && (
+          <div 
+            className="fixed top-[55px] left-0 h-[calc(100%-55px)] bg-white border border-gray-200 rounded-r-2xl shadow-lg z-40 overflow-hidden animate-in slide-in-from-left duration-300 "
+            style={{ width: '400px' }}
+          > 
+              <CourseDetailEditor
+                selectedGroup={selectedGroup!}
+                onClose={closeDetailPanel}
+                onEdit={(course) => {
+                  setEditingCourse({
+                    courseCode: course.courseCode,
+                    section: course.section,
+                    prefix: course.prefix,
+                    courseTitle: course.courseTitle,
+                    seatLimit: course.seatLimit,
+                    seatUsed: course.seatUsed,
+                    seatLeft: course.seatLeft,
+                    startTime: course.startTime,
+                    endTime: course.endTime,
+                    instructorName: course.instructor,
+                    day: course.day,
+                  })
+                  setShowEditClassModal(true)
+                }}
+                onDelete={(courseCode, section) => {
+                  setDeleteConfirm({ courseCode, section })
+                }}
+                glowingCourses={glowingCourses}
+                onDetailGlow={handleDetailGlow}
+                GLOW_SIZE={GLOW_SIZE}
+                getGlowColor={getGlowColor}
+                formatTime={formatTime}
+              />
+            </div>
+        )}
+      </Portal>
 
       {/* Delete Message Toast */}
       {deleteMessage && (

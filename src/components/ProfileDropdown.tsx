@@ -19,9 +19,10 @@ interface ProfileDropdownProps {
   onLogout: () => void
   isOpen: boolean
   onClose: () => void
+  onNotificationClick?: () => void
 }
 
-export function ProfileDropdown({ user, onLogout, isOpen, onClose }: ProfileDropdownProps) {
+export function ProfileDropdown({ user, onLogout, isOpen, onClose, onNotificationClick }: ProfileDropdownProps) {
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -81,6 +82,7 @@ export function ProfileDropdown({ user, onLogout, isOpen, onClose }: ProfileDrop
       label: 'Notifications',
       description: 'Manage alerts',
       href: '#',
+      onClick: onNotificationClick,
     },
   ]
 
@@ -133,24 +135,35 @@ export function ProfileDropdown({ user, onLogout, isOpen, onClose }: ProfileDrop
 
       {/* Menu Items */}
       <div className="py-2">
-        {menuItems.map((item, index) => (
-          <a
-            key={index}
-            href={item.href}
-            className="flex items-center gap-3 px-4 py-3 hover:bg-red-50 transition-colors group"
-          >
-            <div className="w-10 h-10 rounded-full bg-gray-100 group-hover:bg-red-100 flex items-center justify-center text-gray-600 group-hover:text-red-600 transition-colors">
-              {item.icon}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="font-medium text-gray-800 group-hover:text-red-700 transition-colors">
-                {item.label}
-              </p>
-              <p className="text-xs text-gray-500">{item.description}</p>
-            </div>
-            <ChevronRight className="w-4 h-4 text-gray-400 group-hover:text-red-500 transition-colors" />
-          </a>
-        ))}
+        {menuItems.map((item, index) => {
+          const handleClick = (e: React.MouseEvent) => {
+            if (item.onClick) {
+              e.preventDefault()
+              item.onClick()
+              onClose()
+            }
+          }
+          
+          return (
+            <a
+              key={index}
+              href={item.href}
+              onClick={handleClick}
+              className="flex items-center gap-3 px-4 py-3 hover:bg-red-50 transition-colors group cursor-pointer"
+            >
+              <div className="w-10 h-10 rounded-full bg-gray-100 group-hover:bg-red-100 flex items-center justify-center text-gray-600 group-hover:text-red-600 transition-colors">
+                {item.icon}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-gray-800 group-hover:text-red-700 transition-colors">
+                  {item.label}
+                </p>
+                <p className="text-xs text-gray-500">{item.description}</p>
+              </div>
+              <ChevronRight className="w-4 h-4 text-gray-400 group-hover:text-red-500 transition-colors" />
+            </a>
+          )
+        })}
       </div>
 
       {/* Footer */}

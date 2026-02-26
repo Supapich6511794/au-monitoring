@@ -31,6 +31,7 @@ import {
 import { cn } from './utils'
 import { useAuth } from '@/hooks/useAuth'
 import { usePageVisibility } from '@/contexts/PageVisibilityContext'
+import { Portal } from './Portal'
 
 interface SidebarItem {
   icon: React.ReactNode
@@ -99,8 +100,9 @@ export function GCPSidebar({ isOpen, onClose, activeItem = 'Course Monitoring', 
   }
 
   return (
-    <>
+    <><Portal>
       {/* Backdrop */}
+     
       <div 
         className={cn(
           "fixed inset-0 bg-black/20 z-[60] transition-opacity duration-300",
@@ -227,12 +229,13 @@ export function GCPSidebar({ isOpen, onClose, activeItem = 'Course Monitoring', 
                     {item.hasChevron && <ChevronRight className="w-4 h-4 text-gray-400" />}
                   </button>
                 )
-              })}
+              }) }
             </nav>
           </div>
         </div>
 
       </aside>
+      </Portal>
     </>
   )
 }

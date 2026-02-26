@@ -201,22 +201,23 @@ export function AddClassModalPlanner({ isOpen, onClose, onSuccess }: AddClassMod
     <>
       {/* Backdrop with fade animation */}
       <div 
-        className="fixed inset-0 bg-black/30 z-[100] animate-in fade-in duration-200 backdrop-blur-sm"
+        className="fixed inset-0 bg-black/30 z-[200] animate-in fade-in duration-200 backdrop-blur-sm"
         onClick={onClose}
       />
-      {/* Modal with scale + fade animation */}
-      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] bg-white border border-gray-200 rounded-2xl shadow-2xl z-[101] overflow-hidden animate-in fade-in zoom-in-95 slide-in-from-bottom-4 duration-300">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
-          <h3 className="font-semibold text-gray-800 text-sm">Add New Course (Planner)</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        
-        {/* Form fields */}
-        <form onSubmit={handleSubmit}>
-          <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+      {/* Modal with scale + fade animation - centered on screen, always visible */}
+      <div className="fixed inset-0 z-[201] flex items-center justify-center pointer-events-none p-4">
+        <div className="pointer-events-auto w-[560px] bg-white border border-gray-200 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 slide-in-from-bottom-4 duration-300 flex flex-col" style={{ maxHeight: 'calc(100vh - 32px)' }}>
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50 flex-shrink-0">
+            <h3 className="font-semibold text-gray-800 text-sm">Add New Course (Planner)</h3>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          
+          {/* Form fields */}
+          <form onSubmit={handleSubmit} className="flex flex-col flex-1 overflow-hidden">
+            <div className="p-4 space-y-4 overflow-y-auto flex-1">
             {/* Message */}
             {message && (
               <div className={`p-2 rounded-lg flex items-center gap-2 text-sm ${
@@ -488,6 +489,7 @@ export function AddClassModalPlanner({ isOpen, onClose, onSuccess }: AddClassMod
             </button>
           </div>
         </form>
+        </div>
       </div>
     </>
   )

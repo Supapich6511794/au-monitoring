@@ -67,6 +67,7 @@ export function GCPLayout({ children, activeFeature = 'Course Monitoring', proje
   }
 
   return (
+    
     <div className={`min-h-screen bg-gray-50 transition-all duration-700 ease-out ${
       isEntering ? 'opacity-0 translate-y-4' : 'opacity-100 translate-y-0'
     }`}>

@@ -3,6 +3,9 @@ import { createServerClient } from './supabase'
 const TEST_TABLE = 'data_vme_test'
 const SOURCE_TABLE = 'data_vme'
 
+// Track courses that have been logged as full to avoid spam
+const loggedFullCourses = new Set<string>()
+
 interface SimulatorState {
   isRunning: boolean
   sessionId: string | null
@@ -86,6 +89,15 @@ export function getSimulatorState() {
 export function addLog(message: string) {
   const timestamp = new Date().toLocaleTimeString()
   simulatorState.logs = [`[${timestamp}] ${message}`, ...simulatorState.logs.slice(0, 99)]
+}
+
+// Log when a course becomes full (notifications are read directly from data_vme_test)
+function logCourseFull(courseData: any) {
+  const courseKey = `${courseData['Course Code']}-${courseData['Section']}`
+  if (!loggedFullCourses.has(courseKey)) {
+    loggedFullCourses.add(courseKey)
+    addLog(`🔔 FULL: ${courseData['Course Code']}-${courseData['Section']} (${courseData['Seat Limit']} seats)`)
+  }
 }
 
 export async function startSimulator(config: SimulatorState['config']): Promise<string> {
@@ -212,15 +224,21 @@ async function registerStudentParallel(studentNum: number, expectedSessionId: st
               return
             }
 
+            const newSeatLeft = currentData['Seat Left'] - 1
             const { error } = await supabase
               .from(TEST_TABLE)
               .update({
                 'Seat Used': currentData['Seat Used'] + 1,
-                'Seat Left': currentData['Seat Left'] - 1,
+                'Seat Left': newSeatLeft,
               })
               .eq('Course Code', course['Course Code'])
               .eq('Section', course['Section'])
               .eq('Seat Left', currentData['Seat Left']) // Optimistic lock
+
+            // Log when course becomes full (notifications read from data_vme_test directly)
+            if (!error && newSeatLeft === 0) {
+              logCourseFull(currentData)
+            }
 
             resolve({ success: !error, course })
           } catch {
