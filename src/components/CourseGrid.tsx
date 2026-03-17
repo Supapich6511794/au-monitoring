@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useSearchParams, useRouter } from 'next/navigation'
 import { useCourses, DatabaseMode } from '@/hooks/useCourses'
 import { DAYS } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -194,8 +195,25 @@ function DayCourseCard({
 }
 
 export function CourseGrid() {
+  const searchParams = useSearchParams()
+  const router = useRouter()
   const [glowingCourses, setGlowingCourses] = useState<Set<string>>(new Set())
   const glowTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
+  
+  // Track URL params to detect changes
+  const urlCourse = searchParams.get('search')
+  const urlDb = searchParams.get('db')
+  const urlSection = searchParams.get('section')
+  const urlAutoOpen = searchParams.get('autoOpen')
+  
+  // FIX: Initialize database mode from URL BEFORE calling useCourses
+  // This ensures we fetch from the correct table from the start
+  const initialDbMode = useMemo(() => {
+    return (urlDb === 'test' ? 'test' : 'default') as DatabaseMode
+  }, []) // Empty deps - only compute once on mount
+  
+  // Track if user manually changed database (to prevent URL override)
+  const [userChangedDB, setUserChangedDB] = useState(false)
   
   const {
     groupedByDay,
@@ -207,7 +225,7 @@ export function CourseGrid() {
     databaseMode,
     setDatabaseMode,
     isSimulatorRunning,
-  } = useCourses()
+  } = useCourses(initialDbMode)
 
   // Timetable_Move function state - slide positions
   const [allSlidePos, setAllSlidePos] = useState(0) // ALL timetable position: 0 = center, 200 = off right
@@ -371,6 +389,74 @@ export function CourseGrid() {
   const allCourses = Object.values(coursesByDay).flatMap(groups => 
     groups.flatMap(g => g.courses)
   )
+  
+  // Debug logging for database mode and data
+  useEffect(() => {
+    console.log('[CourseGrid] Database mode:', databaseMode)
+    console.log('[CourseGrid] Total courses loaded:', allCourses.length)
+    console.log('[CourseGrid] URL params:', { urlCourse, urlSection, urlDb, urlAutoOpen })
+  }, [databaseMode, allCourses.length, urlCourse, urlSection, urlDb, urlAutoOpen])
+
+  // FIX BUG 2: Filter coursesByDay to show ONLY the specific section from URL
+  const filteredCoursesByDay = useMemo((): Record<string, CourseGroup[]> => {
+    // If no URL params, show all courses
+    if (!urlCourse || !urlSection) {
+      return coursesByDay
+    }
+    
+    console.log('[filteredCoursesByDay] Filtering for:', urlCourse, 'section:', urlSection)
+    console.log('[filteredCoursesByDay] Available courses in coursesByDay:', 
+      Object.values(coursesByDay).flatMap(groups => 
+        groups.flatMap(g => g.courses.map(c => `${c.courseCode}-${c.section} (seats: ${c.seatLeft})`))
+      )
+    )
+    
+    // Filter to show ONLY the specific course + section
+    const result: Record<string, CourseGroup[]> = {}
+    
+    Object.entries(coursesByDay).forEach(([day, groups]) => {
+      const filteredGroups = groups
+        .map(group => {
+          const filteredCourses = group.courses.filter(c => {
+            const codeMatch = c.courseCode.toLowerCase() === urlCourse.toLowerCase()
+            const sectionMatch = c.section === urlSection
+            
+            if (codeMatch && sectionMatch) {
+              console.log('[filteredCoursesByDay] ✅ Found match:', c.courseCode, c.section, 'seats:', c.seatLeft)
+            }
+            
+            return codeMatch && sectionMatch
+          })
+          
+          // Recalculate group time range to match filtered courses only
+          if (filteredCourses.length > 0) {
+            const courseTimes = filteredCourses.map(c => ({
+              start: timeToMinutes(c.startTime),
+              end: timeToMinutes(c.endTime)
+            }))
+            const newStartMin = Math.min(...courseTimes.map(t => t.start))
+            const newEndMin = Math.max(...courseTimes.map(t => t.end))
+            
+            return {
+              ...group,
+              courses: filteredCourses,
+              startMin: newStartMin,
+              endMin: newEndMin
+            }
+          }
+          
+          return { ...group, courses: filteredCourses }
+        })
+        .filter(group => group.courses.length > 0) // Remove empty groups
+      
+      if (filteredGroups.length > 0) {
+        result[day] = filteredGroups
+      }
+    })
+    
+    console.log('[filteredCoursesByDay] Filtered result days:', Object.keys(result))
+    return result
+  }, [coursesByDay, urlCourse, urlSection])
 
   // Processed courses for single-day planner-style grid view
   const processedDayCourses = useMemo(() => {
@@ -414,6 +500,78 @@ export function CourseGrid() {
         course.courseTitle.toLowerCase().includes(searchInput.toLowerCase())
       ).slice(0, 8) // Limit to 8 results
     : []
+
+  // Track previous URL params to detect actual changes
+  const prevUrlParamsRef = useRef({ course: urlCourse, section: urlSection, autoOpen: urlAutoOpen })
+  
+  // FIX BUG 1 & 2: Process URL parameters reactively (no caching)
+  useEffect(() => {
+    // Skip if still loading data
+    if (isLoading) return
+    
+    // Check if URL params actually changed
+    const urlParamsChanged = 
+      prevUrlParamsRef.current.course !== urlCourse ||
+      prevUrlParamsRef.current.section !== urlSection ||
+      prevUrlParamsRef.current.autoOpen !== urlAutoOpen
+    
+    // Only process if URL params changed
+    if (!urlParamsChanged) return
+    
+    // Update ref
+    prevUrlParamsRef.current = { course: urlCourse, section: urlSection, autoOpen: urlAutoOpen }
+    
+    // Reset state when URL params are cleared (e.g., after database switch)
+    if (!urlCourse && !urlAutoOpen) {
+      console.log('[CourseGrid] URL params cleared - resetting filters')
+      // Clear search filters
+      if (searchInput) {
+        setSearchInput('')
+        setSearch('')
+      }
+      // Only clear detail panel if it was opened via URL
+      // Don't clear if user manually clicked a course
+      return
+    }
+    
+    // Apply search filter from URL - only if different from current value
+    if (urlCourse && searchInput !== urlCourse) {
+      console.log('[CourseGrid] Setting search from URL:', urlCourse)
+      setSearchInput(urlCourse)
+      setSearch(urlCourse)
+    }
+    
+    // Auto-open detail panel with ONLY the specific section
+    if (urlAutoOpen === 'true' && urlCourse && !isLoading) {
+      console.log('[CourseGrid] Auto-opening detail panel for:', urlCourse, 'section:', urlSection)
+      
+      // Filter to show the specific section (regardless of seat status)
+      const matchingCourses = allCourses.filter(c => {
+        const codeMatch = c.courseCode.toLowerCase() === urlCourse.toLowerCase()
+        const sectionMatch = urlSection ? c.section === urlSection : true
+        
+        return codeMatch && sectionMatch
+      })
+      
+      console.log('[CourseGrid] Found matching courses:', matchingCourses.length)
+      
+      if (matchingCourses.length > 0) {
+        // Clear previous selection first (FIX BUG 1: prevent stale data)
+        setSelectedGroupIds(null)
+        
+        // Set new selection after a brief delay
+        setTimeout(() => {
+          setSelectedGroupIds(matchingCourses.map(c => ({ 
+            courseCode: c.courseCode, 
+            section: c.section 
+          })))
+        }, 50)
+      } else {
+        console.warn('[CourseGrid] No matching sections found for:', urlCourse, urlSection)
+        setSelectedGroupIds(null)
+      }
+    }
+  }, [urlCourse, urlSection, urlAutoOpen, isLoading, allCourses, searchInput])
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -724,7 +882,27 @@ export function CourseGrid() {
           </div>
           <select
             value={databaseMode}
-            onChange={(e) => setDatabaseMode(e.target.value as DatabaseMode)}
+            onChange={(e) => {
+              const newDb = e.target.value as DatabaseMode
+              console.log('[CourseGrid] User manually changed database to:', newDb)
+              
+              // Mark that user manually changed database - prevents URL override
+              setUserChangedDB(true)
+              setDatabaseMode(newDb)
+              
+              // CRITICAL FIX: Clear URL params and filters when switching databases
+              // This prevents "Course Section Not Found" errors
+              router.push('/course-monitoring', { scroll: false })
+              
+              // Clear local search state
+              setSearchInput('')
+              setSearch('')
+              
+              // Close detail panel
+              setSelectedGroupIds(null)
+              
+              console.log('[CourseGrid] Cleared filters - showing full timetable')
+            }}
             className={cn(
               "px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 font-medium",
               databaseMode === 'test' 
@@ -985,8 +1163,11 @@ export function CourseGrid() {
             ))}
           </div>
 
-          {/* Time table box */}
-          <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-md">
+          {/* Time table box - key forces re-render on URL param changes */}
+          <div 
+            key={`timetable-${urlCourse}-${urlSection}-${urlDb}`}
+            className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-md"
+          >
             {/* Grid - Time table structure without courses */}
             <div>
               {DAYS.map((day, idx) => (
@@ -1011,7 +1192,7 @@ export function CourseGrid() {
                     }}
                   >
                     {/* Course blocks for this day - filtered by search and advanced filters */}
-                    {coursesByDay[day]?.map((group, groupIdx) => {
+                    {filteredCoursesByDay[day]?.map((group, groupIdx) => {
                       // Filter courses in group by search input AND advanced filters
                       const filteredCourses = group.courses.filter(c => {
                         // Text search filter
@@ -1071,6 +1252,21 @@ export function CourseGrid() {
                 </div>
               ))}
             </div>
+            
+            {/* Empty state when no courses found */}
+            {urlCourse && urlSection && Object.keys(filteredCoursesByDay).length === 0 && !isLoading && (
+              <div className="mt-8 text-center py-12 bg-amber-50 border border-amber-200 rounded-lg">
+                <div className="text-amber-600 text-lg font-semibold mb-2">
+                  ⚠️ Course Section Not Found
+                </div>
+                <p className="text-gray-600 text-sm">
+                  {urlCourse} - Section {urlSection} is not currently full or doesn't exist in the {databaseMode === 'test' ? 'Test' : 'Default'} database.
+                </p>
+                <p className="text-gray-500 text-xs mt-2">
+                  The section may have seats available now, or the data may have changed.
+                </p>
+              </div>
+            )}
           </div>
         </div>
         </div>

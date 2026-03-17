@@ -297,8 +297,7 @@ export function useNotifications(): UseNotificationsReturn {
     } finally {
       setIsLoading(false)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasFetchedOnce, notifications.length])
+  }, [hasFetchedOnce, getReadNotifications, getResolvedNotifications, updateReadNotifications, updateResolvedNotifications, getClearedNotifications, recordToNotification])
 
   // Use ref to avoid recreating subscription on every render
   const fetchNotificationsRef = useRef(fetchNotifications)

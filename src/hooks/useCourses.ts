@@ -33,12 +33,12 @@ const TEST_TABLE = 'data_vme_test'
 
 export type DatabaseMode = 'default' | 'test'
 
-export function useCourses() {
+export function useCourses(initialDatabaseMode: DatabaseMode = 'default') {
   const [rawCourses, setRawCourses] = useState<Course[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isSimulatorRunning, setIsSimulatorRunning] = useState(false)
-  const [databaseMode, setDatabaseModeState] = useState<DatabaseMode>('default')
+  const [databaseMode, setDatabaseModeState] = useState<DatabaseMode>(initialDatabaseMode)
   const [filters, setFilters] = useState<FilterState>({
     search: '',
     session: 'ALL',

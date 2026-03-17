@@ -65,8 +65,9 @@ export function GCPHeader({
     // Longer delay to allow React to fully unmount all portals before navigation
     setTimeout(() => {
       const searchParam = encodeURIComponent(courseCode)
-      // Use db=test to show data from test database, filter=full to show only full sections
-      router.push(`/course-monitoring?search=${searchParam}&db=test&filter=full`)
+      const sectionParam = section ? `&section=${encodeURIComponent(section)}` : ''
+      // Use db=test to show data from test database, autoOpen=true to show details panel
+      router.push(`/course-monitoring?search=${searchParam}&db=test${sectionParam}&autoOpen=true`)
     }, 150)
   }
 
