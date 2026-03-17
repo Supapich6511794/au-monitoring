@@ -9,6 +9,7 @@ import { CourseBlock, CSVCourse } from './CourseBlock'
 import { CourseGroup as SupabaseCourseGroup } from '@/lib/types'
 
 import { AnimatedNumber } from './AnimatedNumber'
+import { Portal } from './Portal'
 
 // Time axis configuration
 const START_MIN = 7 * 60 + 30  // 07:30
@@ -902,7 +903,7 @@ export function CourseGrid() {
           }}
         >
           {selectedGroup && (
-<div className="flex flex-col" style={{ width: `${POPUP_WIDTH}px`, maxHeight: '530px' }}>
+            <div className="flex flex-col" style={{ width: `${POPUP_WIDTH}px`, maxHeight: '530px' }}>
               {/* Panel header */}
               <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gray-50">
                 <h3 className="font-bold text-gray-800">Course Details</h3>
@@ -924,7 +925,7 @@ export function CourseGrid() {
                     </div>
                     {/* Course cards - 2 column grid */}
                     <div className="grid grid-cols-2 gap-2">
-                      {courses.map((course, idx) => {
+                      {courses.map((course) => {
                         const courseId = `${course.courseCode}-${course.section}`
                         const isGlowing = glowingCourses.has(`detail-${courseId}`)
                         return (
@@ -1305,6 +1306,7 @@ export function CourseGrid() {
           </div>
         </>
       )}
+
     </div>
   )
 }

@@ -45,6 +45,7 @@ export default function RootLayout({
           <LockedPagePopup />
         </PageVisibilityProvider>
         <CookieProvider />
+        <div id="modal-root" />
       </body>
     </html>
   )
