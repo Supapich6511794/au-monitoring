@@ -180,7 +180,7 @@ export function useNotifications(): UseNotificationsReturn {
   // Fetch all full courses from data_vme_test as notifications
   const fetchNotifications = useCallback(async (force: boolean = false) => {
     // Skip if already fetched and not forced
-    if (hasFetchedOnce && !force && notifications.length > 0) {
+    if (hasFetchedOnce && !force) {
       return
     }
 
@@ -216,18 +216,13 @@ export function useNotifications(): UseNotificationsReturn {
         currentSeatValues.set(id, r['Seat Left'])
       })
 
-      // On initial load: store baseline seat values, auto-mark all full courses as read
+      // On initial load: store baseline seat values
       if (isInitialNotificationLoad) {
         prevSeatValues = new Map(currentSeatValues)
         isInitialNotificationLoad = false
         const fullCount = data.length
-        console.log(`[Notifications] Initial load: stored ${currentSeatValues.size} course seat values, ${fullCount} already full (no notification)`)
-        // Auto-mark all initially-full courses as read
-        data.forEach(r => {
-          const id = `${r["Course Code"]}-${r["Section"]}`
-          readSet.add(id)
-        })
-        updateReadNotifications(readSet)
+        console.log(`[Notifications] Initial load: stored ${currentSeatValues.size} course seat values, ${fullCount} already full`)
+        // Don't auto-mark initially-full courses as read - let users see them
       } else {
         // Detect newly-full courses: prevSeat > 0 AND currentSeat === 0
         const newlyFull: string[] = []
