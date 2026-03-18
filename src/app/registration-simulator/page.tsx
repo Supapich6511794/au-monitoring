@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { GCPLayout } from '@/components/GCPLayout';
 import { RoleGuard } from '@/components/RoleGuard';
 import { supabase } from '@/lib/supabase';
+import { useNotifications } from '@/hooks/useNotifications';
 import { 
   Play, 
   Pause, 
@@ -71,6 +72,9 @@ const STORAGE_KEYS = {
 };
 
 export default function RegistrationSimulatorPage() {
+  // Notification hook for resetting cleared notifications
+  const { resetAllNotifications } = useNotifications();
+  
   // Data states
   const [courses, setCourses] = useState<CourseData[]>([]);
   const [originalData, setOriginalData] = useState<CourseData[]>([]);
@@ -276,12 +280,21 @@ export default function RegistrationSimulatorPage() {
           }
         }
       )
-      .subscribe((status, err) => {
-        console.log('[Simulator] Subscription status:', status, err ? err.message : '');
+      .subscribe((status) => {
+        console.log('[Simulator] Subscription status:', status);
         if (status === 'SUBSCRIBED') {
           console.log('[Simulator] ✅ Successfully subscribed to realtime');
         } else if (status === 'CHANNEL_ERROR') {
-          console.error('[Simulator] ❌ Channel error:', err);
+          console.error('[Simulator] ❌ Channel error - Realtime subscription failed');
+          console.error('[Simulator] Possible causes:');
+          console.error('  1. Realtime not enabled on table "data_vme_test" in Supabase Dashboard');
+          console.error('  2. RLS policies blocking realtime access');
+          console.error('  3. Network connectivity issues');
+          console.warn('[Simulator] ⚠️ Falling back to polling mode - realtime updates disabled');
+        } else if (status === 'TIMED_OUT') {
+          console.warn('[Simulator] ⚠️ Realtime subscription timed out');
+        } else if (status === 'CLOSED') {
+          console.log('[Simulator] Realtime subscription closed');
         }
       });
 
@@ -477,6 +490,11 @@ export default function RegistrationSimulatorPage() {
         startTime: null,
         elapsedTime: 0,
       });
+
+      // Reset all notification states (cleared, read, resolved)
+      // This allows courses to send notifications again after reset
+      resetAllNotifications();
+      addLog('🔔 Notification states reset');
 
       // Re-fetch courses to update the overview
       await fetchCourses();
